@@ -1,7 +1,14 @@
-# Tauri + React + Typescript
+# Sporelink Launcher (Rust + Tauri)
 
-This template should help get you started developing with Tauri, React and Typescript in Vite.
+Современный кастомный лаунчер с поддержкой нашего Auth-сервера.
 
-## Recommended IDE Setup
+## Особенности
+* Авторизация через Sporelink.
+* 3D-просмотр скина (`skinview3d`).
+* Автоматическое скачивание и внедрение `authlib-injector`.
+* Красивый интерфейс (Dark Theme, кастомный TitleBar).
 
-- [VS Code](https://code.visualstudio.com/) + [Tauri](https://marketplace.visualstudio.com/items?itemName=tauri-apps.tauri-vscode) + [rust-analyzer](https://marketplace.visualstudio.com/items?itemName=rust-lang.rust-analyzer)
+## Запуск
+```bash
+npm install
+cargo tauri dev
