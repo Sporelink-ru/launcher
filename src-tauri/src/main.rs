@@ -8,6 +8,9 @@ use std::fs;
 use serde_json::Value;
 use anyhow::Context;
 use base64::{engine::general_purpose, Engine as _};
+use tauri::Emitter;
+use std::io::{BufRead, BufReader};
+use std::process::Stdio;
 
 // Объявляем наши модули
 mod auth;
@@ -31,6 +34,18 @@ fn login(username: String, password: String) -> Result<LoginResult, String> {
             access_token: resp.access_token,
         }),
         Err(e) => Err(e.to_string()),
+    }
+}
+
+#[command]
+fn get_saved_session() -> Result<Option<LoginResult>, String> {
+    match storage::load() {
+        Ok(Some(token)) => Ok(Some(LoginResult {
+            name: token.profile.name,
+            uuid: token.profile.id,
+            access_token: token.access_token,
+        })),
+        _ => Ok(None),
     }
 }
 
@@ -73,35 +88,36 @@ fn get_skin_data(uuid: String) -> Result<String, String> {
 }
 
 #[command]
-fn launch_game(version: String, ram_mb: u32) -> Result<(), String> {
-    launch_minecraft(&version, ram_mb).map_err(|e| e.to_string())
+fn launch_game(window: tauri::Window, version: String, ram_mb: u32) -> Result<(), String> {
+    launch_minecraft(window, &version, ram_mb).map_err(|e| e.to_string())
 }
 
-// ─── Логика запуска Minecraft ─────────────────────────────────────────
-fn launch_minecraft(version: &str, ram_mb: u32) -> anyhow::Result<()> {
+fn launch_minecraft(window: tauri::Window, version: &str, ram_mb: u32) -> anyhow::Result<()> {
     let token_data = storage::load()?.context("Not logged in.")?;
+    
+    window.emit("launch_status", "Проверка authlib-injector...").ok();
     
     let injector_path = dirs::data_dir().unwrap().join("sporelink").join("authlib-injector.jar");
     if !injector_path.exists() {
-        println!("Downloading authlib-injector...");
+        window.emit("launch_status", "Скачивание authlib-injector...").ok();
         let url = "https://github.com/yushijinhun/authlib-injector/releases/download/v1.2.5/authlib-injector-1.2.5.jar";
         let mut resp = reqwest::blocking::get(url)?;
         let mut file = fs::File::create(&injector_path)?;
         std::io::copy(&mut resp, &mut file)?;
     }
 
+    window.emit("launch_status", "Сборка Classpath...").ok();
     let mc_dir = dirs::home_dir().unwrap().join(".minecraft");
-    
     let version_dir = mc_dir.join("versions").join(version);
     let client_jar = version_dir.join(format!("{}.jar", version));
     let version_json = version_dir.join(format!("{}.json", version));
 
     if !client_jar.exists() || !version_json.exists() {
-        anyhow::bail!("Client not found at {:?}. Please run version {} once in the official launcher.", version_dir, version);
+        anyhow::bail!("Клиент не найден. Запустите версию {} через официальный лаунчер.", version);
     }
 
     let json_str = fs::read_to_string(&version_json)?;
-    let json: Value = serde_json::from_str(&json_str)?;
+    let json: serde_json::Value = serde_json::from_str(&json_str)?;
     let main_class = json["mainClass"].as_str().unwrap_or("net.minecraft.client.main.Main");
     let mut classpath = vec![client_jar.to_string_lossy().to_string()];
     
@@ -132,7 +148,7 @@ fn launch_minecraft(version: &str, ram_mb: u32) -> anyhow::Result<()> {
     let api_root = "http://localhost:5000"; 
     let javaagent = format!("-javaagent:{}={}", injector_path.display(), api_root);
 
-    println!("Launching Minecraft {} as {}...", version, token_data.profile.name);
+    window.emit("launch_status", "Запуск Java-процесса...").ok();
     
     let mut cmd = Command::new("java");
     cmd.arg(format!("-Xmx{}M", ram_mb))
@@ -145,18 +161,49 @@ fn launch_minecraft(version: &str, ram_mb: u32) -> anyhow::Result<()> {
        .arg("--version").arg(version)
        .arg("--gameDir").arg(&mc_dir)
        .arg("--assetsDir").arg(mc_dir.join("assets"))
-       .arg("--assetIndex").arg(json["assetIndex"]["id"].as_str().unwrap_or(""));
+       .arg("--assetIndex").arg(json["assetIndex"]["id"].as_str().unwrap_or(""))
+       .stdout(Stdio::piped())
+       .stderr(Stdio::piped());
 
-    let status = cmd.status()?;
-    if !status.success() {
-        anyhow::bail!("Minecraft exited with an error");
+    let mut child = cmd.spawn().context("Не удалось запустить Java")?;
+    
+    window.emit("launch_status", "Игра запущена. Ожидание закрытия...").ok();
+    window.emit("launch_progress", 100).ok();
+
+    // Читаем stdout в отдельном потоке, чтобы не блокировать лаунчер
+    if let Some(stdout) = child.stdout.take() {
+        let window_clone = window.clone();
+        std::thread::spawn(move || {
+            let reader = BufReader::new(stdout);
+            for line in reader.lines().flatten() {
+                window_clone.emit("launch_log", line).ok();
+            }
+        });
     }
+
+    if let Some(stderr) = child.stderr.take() {
+        let window_clone = window.clone();
+        std::thread::spawn(move || {
+            let reader = BufReader::new(stderr);
+            for line in reader.lines().flatten() {
+                window_clone.emit("launch_log", line).ok();
+            }
+        });
+    }
+
+    // Ждём закрытия игры в фоне
+    std::thread::spawn(move || {
+        let _ = child.wait();
+        window.emit("game_closed", ()).ok();
+    });
+
     Ok(())
 }
 
 fn main() {
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![login, get_skin_data, launch_game])
+        .plugin(tauri_plugin_opener::init())
+        .invoke_handler(tauri::generate_handler![login, get_skin_data, launch_game, get_saved_session])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
