@@ -153,7 +153,7 @@ export default function App() {
       </div>
 
       {isUserModalOpen && user && (
-        <UserModal user={user} skinData={skinData} onClose={() => setIsUserModalOpen(false)} />
+        <UserModal skinData={skinData} onClose={() => setIsUserModalOpen(false)} />
       )}
       
       {isLaunching && (
