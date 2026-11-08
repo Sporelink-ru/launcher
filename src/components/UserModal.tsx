@@ -1,6 +1,6 @@
 import SkinPreview from '../SkinPreview'; // Ваш существующий компонент
 
-export default function UserModal({ user, skinData, onClose }: any) {
+export default function UserModal({ skinData, onClose }: any) {
   return (
     <div className="modal-overlay" onClick={onClose}>
       <div className="modal-content" onClick={e => e.stopPropagation()}>
