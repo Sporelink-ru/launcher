@@ -1,3 +1,5 @@
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
 # Sporelink Launcher (Rust + Tauri)
 
 Современный кастомный лаунчер с поддержкой нашего Auth-сервера.
