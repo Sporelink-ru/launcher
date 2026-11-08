@@ -7,6 +7,7 @@ use std::process::Command;
 use std::fs;
 use serde_json::Value;
 use anyhow::Context;
+use base64::{engine::general_purpose, Engine as _};
 
 // Объявляем наши модули
 mod auth;
@@ -34,12 +35,50 @@ fn login(username: String, password: String) -> Result<LoginResult, String> {
 }
 
 #[command]
-fn launch_game(version: String) -> Result<(), String> {
-    launch_minecraft(&version, None).map_err(|e| e.to_string())
+fn get_skin_data(uuid: String) -> Result<String, String> {
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .build()
+        .map_err(|e| e.to_string())?;
+        
+    let url = format!("http://localhost:5000/sessionserver/session/minecraft/profile/{}", uuid);
+    println!("Fetching skin profile from: {}", url);
+    
+    let resp = client.get(&url).send().map_err(|e| {
+        println!("Network error: {}", e);
+        e.to_string()
+    })?;
+    
+    let json: serde_json::Value = resp.json().map_err(|e| e.to_string())?;
+
+    if let Some(props) = json["properties"].as_array() {
+        for prop in props {
+            if prop["name"] == "textures" {
+                if let Some(val) = prop["value"].as_str() {
+                    let decoded = base64::engine::general_purpose::STANDARD.decode(val).map_err(|e| e.to_string())?;
+                    let tex_json: serde_json::Value = serde_json::from_slice(&decoded).map_err(|e| e.to_string())?;
+                    
+                    if let Some(skin_url) = tex_json["textures"]["SKIN"]["url"].as_str() {
+                        println!("Downloading skin image from: {}", skin_url);
+                        let img_resp = client.get(skin_url).send().map_err(|e| e.to_string())?;
+                        let img_bytes = img_resp.bytes().map_err(|e| e.to_string())?;
+                        let b64 = base64::engine::general_purpose::STANDARD.encode(&img_bytes);
+                        return Ok(format!("data:image/png;base64,{}", b64));
+                    }
+                }
+            }
+        }
+    }
+    Err("No skin found in profile".to_string())
+}
+
+#[command]
+fn launch_game(version: String, ram_mb: u32) -> Result<(), String> {
+    launch_minecraft(&version, ram_mb).map_err(|e| e.to_string())
 }
 
 // ─── Логика запуска Minecraft ─────────────────────────────────────────
-fn launch_minecraft(version: &str, custom_game_dir: Option<String>) -> anyhow::Result<()> {
+fn launch_minecraft(version: &str, ram_mb: u32) -> anyhow::Result<()> {
     let token_data = storage::load()?.context("Not logged in.")?;
     
     let injector_path = dirs::data_dir().unwrap().join("sporelink").join("authlib-injector.jar");
@@ -51,10 +90,7 @@ fn launch_minecraft(version: &str, custom_game_dir: Option<String>) -> anyhow::R
         std::io::copy(&mut resp, &mut file)?;
     }
 
-    let mc_dir = match custom_game_dir {
-        Some(dir) => std::path::PathBuf::from(dir),
-        None => dirs::home_dir().unwrap().join(".minecraft"),
-    };
+    let mc_dir = dirs::home_dir().unwrap().join(".minecraft");
     
     let version_dir = mc_dir.join("versions").join(version);
     let client_jar = version_dir.join(format!("{}.jar", version));
@@ -99,7 +135,7 @@ fn launch_minecraft(version: &str, custom_game_dir: Option<String>) -> anyhow::R
     println!("Launching Minecraft {} as {}...", version, token_data.profile.name);
     
     let mut cmd = Command::new("java");
-    cmd.arg("-Xmx2G")
+    cmd.arg(format!("-Xmx{}M", ram_mb))
        .arg(javaagent)
        .arg("-cp").arg(cp_string)
        .arg(main_class)
@@ -120,7 +156,7 @@ fn launch_minecraft(version: &str, custom_game_dir: Option<String>) -> anyhow::R
 
 fn main() {
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![login, launch_game])
+        .invoke_handler(tauri::generate_handler![login, get_skin_data, launch_game])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
