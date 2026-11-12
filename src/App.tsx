@@ -6,18 +6,20 @@ import TitleBar from './components/TitleBar';
 import UserModal from './components/UserModal';
 import LaunchModal from './components/LaunchModal';
 import SettingsModal from './components/SettingsModal';
+import NewsModal from './components/NewsModal';
 import './App.css';
 
 export default function App() {
   const [username, setUsername] = useState('alice');
   const [password, setPassword] = useState('password');
   const [user, setUser] = useState<{name: string, uuid: string} | null>(null);
-  const [skinData, setSkinData] = useState<string | null>(null);
+  const [textures, setTextures] = useState<{skin: string | null, cape: string | null}>({skin: null, cape: null});
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
 
   const [isUserModalOpen, setIsUserModalOpen] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [isNewsOpen, setIsNewsOpen] = useState(false);
   const [ram, setRam] = useState(2048);
 
   const [isLaunching, setIsLaunching] = useState(false);
@@ -36,14 +38,7 @@ export default function App() {
 
   // 2. Загрузка скина при появлении пользователя
   useEffect(() => {
-    if (user) {
-      invoke<string>('get_skin_data', { uuid: user.uuid })
-        .then(skin => setSkinData(skin))
-        .catch(e => {
-          console.error("Skin error:", e);
-          setSkinData(null);
-        });
-    }
+    refreshSkin();
   }, [user]);
 
   // 3. Подписка на события из Rust
@@ -103,17 +98,26 @@ export default function App() {
   const handleLogout = () => {
     invoke('logout_cmd').catch(() => {});
     setUser(null);
-    setSkinData(null);
+    setTextures({ skin: null, cape: null });
     setPassword('');
+  };
+
+  const refreshSkin = () => {
+    if (user) {
+      invoke<any>('get_textures_data', { uuid: user.uuid })
+        .then(data => setTextures({ skin: data.skin, cape: data.cape }))
+        .catch(e => console.error(e));
+    }
   };
 
   return (
     <div className="app-container">
       <TitleBar 
         user={user} 
-        skinData={skinData}
+        skinData={textures.skin}
         onOpenUserModal={() => setIsUserModalOpen(true)} 
         onOpenSettings={() => setIsSettingsOpen(true)}
+        onOpenNews={() => setIsNewsOpen(true)}
         onLogout={handleLogout} 
       />
 
@@ -153,7 +157,12 @@ export default function App() {
       </div>
 
       {isUserModalOpen && user && (
-        <UserModal skinData={skinData} onClose={() => setIsUserModalOpen(false)} />
+        <UserModal 
+          user={user} 
+          textures={textures} 
+          onClose={() => setIsUserModalOpen(false)} 
+          onRefreshSkin={refreshSkin}
+        />
       )}
       
       {isLaunching && (
@@ -166,6 +175,10 @@ export default function App() {
 
       {isSettingsOpen && (
         <SettingsModal ram={ram} setRam={setRam} onClose={() => setIsSettingsOpen(false)} />
+      )}
+
+      {isNewsOpen && (
+        <NewsModal onClose={() => setIsNewsOpen(false)} />
       )}
     </div>
   );

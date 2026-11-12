@@ -28,11 +28,26 @@ struct LoginResult {
 fn login(username: String, password: String) -> Result<LoginResult, String> {
     let alias = format!("{}@localhost:5000", username);
     match auth::login(&alias, &password) {
-        Ok(resp) => Ok(LoginResult {
-            name: resp.selected_profile.name,
-            uuid: resp.selected_profile.id,
-            access_token: resp.access_token,
-        }),
+        Ok(resp) => {
+            // Сохраняем свежий токен на диск!
+            let stored = storage::StoredToken {
+                hub_url: "http://localhost:5000".to_string(),
+                auth_homeserver: "http://localhost:5000".to_string(),
+                server_id: "hub-0001".to_string(),
+                access_token: resp.access_token.clone(),
+                client_token: resp.client_token.clone(),
+                profile: resp.selected_profile.clone(),
+            };
+            if let Err(e) = storage::save(&stored) {
+                println!("Failed to save token: {}", e);
+            }
+
+            Ok(LoginResult {
+                name: resp.selected_profile.name,
+                uuid: resp.selected_profile.id,
+                access_token: resp.access_token,
+            })
+        },
         Err(e) => Err(e.to_string()),
     }
 }
@@ -49,42 +64,89 @@ fn get_saved_session() -> Result<Option<LoginResult>, String> {
     }
 }
 
+#[derive(serde::Serialize)]
+struct TexturesData {
+    skin: Option<String>,
+    cape: Option<String>,
+}
+
 #[command]
-fn get_skin_data(uuid: String) -> Result<String, String> {
-    let client = reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(5))
-        .build()
-        .map_err(|e| e.to_string())?;
-        
+fn get_textures_data(uuid: String) -> Result<TexturesData, String> {
+    let client = reqwest::blocking::Client::builder().timeout(std::time::Duration::from_secs(5)).build().map_err(|e| e.to_string())?;
     let url = format!("http://localhost:5000/sessionserver/session/minecraft/profile/{}", uuid);
-    println!("Fetching skin profile from: {}", url);
     
-    let resp = client.get(&url).send().map_err(|e| {
-        println!("Network error: {}", e);
-        e.to_string()
-    })?;
-    
+    let resp = client.get(&url).send().map_err(|e| e.to_string())?;
     let json: serde_json::Value = resp.json().map_err(|e| e.to_string())?;
+
+    let mut skin_b64 = None;
+    let mut cape_b64 = None;
 
     if let Some(props) = json["properties"].as_array() {
         for prop in props {
             if prop["name"] == "textures" {
                 if let Some(val) = prop["value"].as_str() {
-                    let decoded = base64::engine::general_purpose::STANDARD.decode(val).map_err(|e| e.to_string())?;
-                    let tex_json: serde_json::Value = serde_json::from_slice(&decoded).map_err(|e| e.to_string())?;
-                    
-                    if let Some(skin_url) = tex_json["textures"]["SKIN"]["url"].as_str() {
-                        println!("Downloading skin image from: {}", skin_url);
-                        let img_resp = client.get(skin_url).send().map_err(|e| e.to_string())?;
-                        let img_bytes = img_resp.bytes().map_err(|e| e.to_string())?;
-                        let b64 = base64::engine::general_purpose::STANDARD.encode(&img_bytes);
-                        return Ok(format!("data:image/png;base64,{}", b64));
+                    if let Ok(decoded) = base64::engine::general_purpose::STANDARD.decode(val) {
+                        if let Ok(tex_json) = serde_json::from_slice::<serde_json::Value>(&decoded) {
+                            // Скачиваем скин
+                            if let Some(skin_url) = tex_json["textures"]["SKIN"]["url"].as_str() {
+                                if let Ok(img) = client.get(skin_url).send().and_then(|r| r.bytes()) {
+                                    skin_b64 = Some(format!("data:image/png;base64,{}", base64::engine::general_purpose::STANDARD.encode(&img)));
+                                }
+                            }
+                            // Скачиваем плащ
+                            if let Some(cape_url) = tex_json["textures"]["CAPE"]["url"].as_str() {
+                                if let Ok(img) = client.get(cape_url).send().and_then(|r| r.bytes()) {
+                                    cape_b64 = Some(format!("data:image/png;base64,{}", base64::engine::general_purpose::STANDARD.encode(&img)));
+                                }
+                            }
+                        }
                     }
                 }
             }
         }
     }
-    Err("No skin found in profile".to_string())
+    Ok(TexturesData { skin: skin_b64, cape: cape_b64 })
+}
+
+#[command]
+fn upload_texture(uuid: String, file_bytes: Vec<u8>, model: String, texture_type: String) -> Result<(), String> {
+    let token_data = storage::load().map_err(|e| e.to_string())?.ok_or("Not logged in")?;
+    let client = reqwest::blocking::Client::new();
+    let url = format!("http://localhost:5000/api/user/profile/{}/{}", uuid, texture_type);
+    
+    let part = reqwest::blocking::multipart::Part::bytes(file_bytes)
+        .file_name("texture.png").mime_str("image/png").map_err(|e| e.to_string())?;
+        
+    let mut form = reqwest::blocking::multipart::Form::new().part("file", part);
+    if texture_type == "skin" { form = form.text("model", model); }
+
+    let resp = client.put(&url)
+        .header("Authorization", format!("Bearer {}", token_data.access_token))
+        .multipart(form).send().map_err(|e| e.to_string())?;
+
+    if !resp.status().is_success() { return Err(format!("Server returned: {}", resp.status())); }
+    Ok(())
+}
+
+#[derive(serde::Deserialize, serde::Serialize)]
+struct NewsItem {
+    id: i32,
+    title: String,
+    content: String,
+    date: String,
+}
+
+#[command]
+fn get_news() -> Result<Vec<NewsItem>, String> {
+    let client = reqwest::blocking::Client::new();
+    let resp = client.get("http://localhost:5000/api/news")
+        .send()
+        .map_err(|e| e.to_string())?;
+        
+    let news = resp.json::<Vec<NewsItem>>()
+        .map_err(|e| e.to_string())?;
+        
+    Ok(news)
 }
 
 #[command]
@@ -203,7 +265,14 @@ fn launch_minecraft(window: tauri::Window, version: &str, ram_mb: u32) -> anyhow
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .invoke_handler(tauri::generate_handler![login, get_skin_data, launch_game, get_saved_session])
+        .invoke_handler(tauri::generate_handler![
+            login,
+            get_textures_data,
+            launch_game,
+            get_saved_session,
+            upload_texture,
+            get_news
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
