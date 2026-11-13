@@ -1,15 +1,16 @@
 import { useState, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import { openUrl } from '@tauri-apps/plugin-opener';
 import TitleBar from './components/TitleBar';
 import UserModal from './components/UserModal';
 import LaunchModal from './components/LaunchModal';
 import SettingsModal from './components/SettingsModal';
 import NewsModal from './components/NewsModal';
+import VersionSelector from './components/VersionSelector';
 import './App.css';
 
 export default function App() {
+  // --- Авторизация ---
   const [username, setUsername] = useState('alice');
   const [password, setPassword] = useState('password');
   const [user, setUser] = useState<{name: string, uuid: string} | null>(null);
@@ -17,47 +18,56 @@ export default function App() {
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
 
+  // --- Настройки и модалки ---
   const [isUserModalOpen, setIsUserModalOpen] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isNewsOpen, setIsNewsOpen] = useState(false);
   const [ram, setRam] = useState(2048);
 
+  // --- Версии и запуск ---
+  const [versions, setVersions] = useState<string[]>([]);
+  const [selectedVersion, setSelectedVersion] = useState("1.20.4");
   const [isLaunching, setIsLaunching] = useState(false);
   const [launchStatus, setLaunchStatus] = useState('');
-  const [launchLogs, setLaunchLogs] = useState<string[]>([]);
+  const [launchProgress, setLaunchProgress] = useState(0); // <--- ВОТ ОНО!
   const [launchError, setLaunchError] = useState<string | null>(null);
 
-  // 1. Проверка сохраненной сессии при старте
+  // 1. Проверка сохраненной сессии
   useEffect(() => {
     invoke<any>('get_saved_session').then(session => {
-      if (session) {
-        setUser({ name: session.name, uuid: session.uuid });
-      }
+      if (session) setUser({ name: session.name, uuid: session.uuid });
     }).catch(console.error);
   }, []);
 
-  // 2. Загрузка скина при появлении пользователя
-  useEffect(() => {
-    refreshSkin();
-  }, [user]);
+  // 2. Загрузка скинов
+  const refreshTextures = () => {
+    if (user) {
+      invoke<any>('get_textures_data', { uuid: user.uuid })
+        .then(data => setTextures({ skin: data.skin, cape: data.cape }))
+        .catch(e => console.error(e));
+    }
+  };
 
-  // 3. Подписка на события из Rust
+  useEffect(() => { refreshTextures(); }, [user]);
+
+  // 3. Загрузка списка версий
   useEffect(() => {
-    let unlistenStatus: any;
-    let unlistenLog: any;
-    let unlistenClosed: any;
+    invoke<string[]>('get_minecraft_versions')
+      .then(v => {
+        setVersions(v);
+        if (!v.includes(selectedVersion) && v.length > 0) setSelectedVersion(v[0]);
+      })
+      .catch(err => console.error("Error fetching versions:", err));
+  }, []);
+
+  // 4. Подписка на события из Rust (логи, статусы, закрытие игры)
+  useEffect(() => {
+    let unlistenStatus: any, unlistenLog: any, unlistenClosed: any;
 
     async function setupListeners() {
-      unlistenStatus = await listen<string>('launch_status', (event) => {
-        setLaunchStatus(event.payload);
-      });
-      unlistenLog = await listen<string>('launch_log', (event) => {
-        setLaunchLogs(prev => [...prev.slice(-50), event.payload]);
-      });
+      unlistenStatus = await listen<string>('launch_status', (event) => setLaunchStatus(event.payload));
       unlistenClosed = await listen('game_closed', () => {
-        setIsLaunching(false);
-        setLaunchLogs([]);
-        setLaunchStatus('');
+        setLaunchStatus('Игра успешно закрыта.');
       });
     }
     setupListeners();
@@ -69,9 +79,27 @@ export default function App() {
     };
   }, []);
 
+  // 5. Слушатель события launch_progress из Rust
+  useEffect(() => {
+    let unlistenStatus: any, unlistenClosed: any, unlistenProgress: any;
+
+    async function setupListeners() {
+      unlistenStatus = await listen<string>('launch_status', (event) => setLaunchStatus(event.payload));
+      unlistenProgress = await listen<number>('launch_progress', (event) => {
+        setLaunchProgress(event.payload);
+      });
+    }
+    setupListeners();
+
+    return () => {
+      if (unlistenStatus) unlistenStatus();
+      if (unlistenClosed) unlistenClosed();
+      if (unlistenProgress) unlistenProgress();
+    };
+  }, []);
+
   const handleLogin = async () => {
-    setLoading(true);
-    setError('');
+    setLoading(true); setError('');
     try {
       const result: any = await invoke('login', { username, password });
       setUser({ name: result.name, uuid: result.uuid });
@@ -85,29 +113,38 @@ export default function App() {
   const handleLaunch = async () => {
     setIsLaunching(true);
     setLaunchError(null);
-    setLaunchStatus('Инициализация...');
-    setLaunchLogs([]);
-    
+    setLaunchStatus('Подготовка...');
+    setLaunchProgress(0);
+
     try {
-      await invoke('launch_game', { version: '1.20.4', ramMb: ram });
+      await invoke('download_game_and_java', { version: selectedVersion });
+      
+      setLaunchStatus('Запуск Minecraft...');
+      setLaunchProgress(100);
+      
+      await invoke('launch_game', { version: selectedVersion, ramMb: ram });
+      
+      setLaunchStatus('Успешно! Игра запускается...');
+      setTimeout(() => {
+        setIsLaunching(false);
+        setLaunchProgress(0);
+        setLaunchStatus('');
+      }, 3000);
+
     } catch (e) {
       setLaunchError(e as string);
+      setLaunchStatus('Ошибка');
     }
+  };
+
+  const closeLaunchModal = () => {
+    setIsLaunching(false);
+    setLaunchStatus('');
+    setLaunchProgress(0);
   };
 
   const handleLogout = () => {
-    invoke('logout_cmd').catch(() => {});
-    setUser(null);
-    setTextures({ skin: null, cape: null });
-    setPassword('');
-  };
-
-  const refreshSkin = () => {
-    if (user) {
-      invoke<any>('get_textures_data', { uuid: user.uuid })
-        .then(data => setTextures({ skin: data.skin, cape: data.cape }))
-        .catch(e => console.error(e));
-    }
+    setUser(null); setTextures({skin: null, cape: null}); setPassword(''); setUsername('');
   };
 
   return (
@@ -131,45 +168,43 @@ export default function App() {
               {loading ? 'Загрузка...' : 'Войти'}
             </button>
             {error && <div className="error-msg">{error}</div>}
-
-            <div className="auth-links">
-              <span className="link" onClick={() => openUrl('https://sporelink.ru')}>
-                Регистрация
-              </span>
-              <span className="divider">•</span>
-              <span className="link" onClick={() => openUrl('https://sporelink.ru')}>
-                Забыли пароль?
-              </span>
-            </div>
           </div>
         ) : (
-          <div key="dashboard" className="animate-in" style={{ textAlign: 'center', width: '100%' }}>
-            <h1 style={{ fontSize: 36, marginBottom: 10, textShadow: '0 4px 20px rgba(0,0,0,0.5)' }}>
+          <div key="dashboard" className="animate-in" style={{ textAlign: 'center', width: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+            <h1 style={{ fontSize: 36, marginBottom: 10, textShadow: '0 4px 20px rgba(0,0,0,0.5)', marginTop: 40 }}>
               Добро пожаловать, <span style={{ color: 'var(--primary)' }}>{user.name}</span>
             </h1>
             <p style={{ color: 'var(--text-muted)', marginBottom: 40 }}>С возвращением в Sporelink Network</p>
 
-            <button className="play-btn" onClick={handleLaunch} disabled={loading || isLaunching}>
-              {isLaunching ? 'Игра запущена...' : '▶ ИГРАТЬ'}
+            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4 }}>
+              <label style={{ fontSize: 13, color: 'var(--text-muted)' }}>Выберите версию Minecraft</label>
+              <VersionSelector 
+                versions={versions} 
+                selected={selectedVersion} 
+                onChange={setSelectedVersion} 
+              />
+            </div>
+
+            <button className="play-btn" onClick={handleLaunch} disabled={loading || isLaunching} style={{ width: 250 }}>
+              {isLaunching ? 'Запуск...' : '▶ ИГРАТЬ'}
             </button>
+            
+            {error && <div className="error-msg">{error}</div>}
           </div>
         )}
       </div>
 
+      {/* Модалки */}
       {isUserModalOpen && user && (
-        <UserModal 
-          user={user} 
-          textures={textures} 
-          onClose={() => setIsUserModalOpen(false)} 
-          onRefreshSkin={refreshSkin}
-        />
+        <UserModal user={user} textures={textures} onClose={() => setIsUserModalOpen(false)} onRefreshSkin={refreshTextures} />
       )}
       
       {isLaunching && (
         <LaunchModal 
+          progress={launchProgress}
           status={launchStatus} 
-          logs={launchLogs} 
           error={launchError} 
+          onClose={closeLaunchModal}
         />
       )}
 

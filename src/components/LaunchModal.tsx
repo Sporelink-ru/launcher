@@ -1,45 +1,38 @@
-export default function LaunchModal({ status, logs, error }: { status: string, logs: string[], error: string | null }) {
+export default function LaunchModal({ status, progress, error, onClose }: { 
+  status: string, 
+  progress: number,
+  error: string | null, 
+  onClose: () => void 
+}) {
   return (
     <div className="modal-overlay" style={{ zIndex: 1000 }}>
-      <div className="modal-content" style={{ width: 500, textAlign: 'center' }} onClick={e => e.stopPropagation()}>
-        <h2 style={{ marginTop: 0, color: 'var(--primary)' }}>
+      <div className="modal-content" style={{ width: 450, textAlign: 'center', padding: '40px 24px' }} onClick={e => e.stopPropagation()}>
+        
+        <h2 style={{ marginTop: 0, color: error ? 'var(--danger)' : 'var(--primary)', marginBottom: 20 }}>
           {error ? 'Ошибка запуска' : 'Запуск Minecraft'}
         </h2>
         
         {error ? (
-          <div style={{ color: 'var(--danger)', background: 'rgba(239, 68, 68, 0.1)', padding: 12, borderRadius: 8, textAlign: 'left', fontSize: 14 }}>
-            {error}
-          </div>
+          <>
+            <div style={{ color: 'var(--danger)', background: 'rgba(239, 68, 68, 0.1)', padding: 16, borderRadius: 8, textAlign: 'left', fontSize: 14, marginBottom: 20 }}>
+              {error}
+            </div>
+            <button onClick={onClose} style={{ width: '100%' }}>
+              Закрыть
+            </button>
+          </>
         ) : (
           <>
             <p style={{ color: 'var(--text-muted)', marginBottom: 20 }}>{status}</p>
             
-            {/* Бесконечный прогресс (так как мы не знаем точное время загрузки Java) */}
-            <div className="progress-container" style={{ maxWidth: '100%' }}>
-              <div className="progress-bar-bg">
-                <div className="progress-bar-fill" style={{ width: '100%', animation: 'pulse 1.5s infinite' }} />
+            <div className="progress-container" style={{ maxWidth: '100%', marginBottom: 20 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, color: 'var(--text-muted)', marginBottom: 8 }}>
+                <span>Прогресс</span>
+                <span>{progress}%</span>
               </div>
-            </div>
-
-            <div style={{ 
-              marginTop: 24, 
-              background: '#0f172a', 
-              padding: 12, 
-              borderRadius: 8, 
-              fontFamily: 'monospace', 
-              fontSize: 12, 
-              color: '#10b981',
-              textAlign: 'left',
-              height: 120,
-              overflowY: 'auto',
-              display: 'flex',
-              flexDirection: 'column',
-              gap: 4
-            }}>
-              {logs.length === 0 ? <div>Ожидание логов...</div> : null}
-              {logs.map((log, i) => (
-                <div key={i} style={{ wordBreak: 'break-all' }}>{log}</div>
-              ))}
+              <div className="progress-bar-bg">
+                <div className="progress-bar-fill" style={{ width: `${progress}%`, background: 'var(--primary)' }} />
+              </div>
             </div>
           </>
         )}
