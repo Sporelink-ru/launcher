@@ -11,8 +11,8 @@ import './App.css';
 
 export default function App() {
   // --- Авторизация ---
-  const [username, setUsername] = useState('alice');
-  const [password, setPassword] = useState('password');
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
   const [user, setUser] = useState<{name: string, uuid: string} | null>(null);
   const [textures, setTextures] = useState<{skin: string | null, cape: string | null}>({skin: null, cape: null});
   const [error, setError] = useState('');
