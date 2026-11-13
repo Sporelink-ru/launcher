@@ -4,36 +4,66 @@ on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch: # Позволяет запускать сборку вручную для теста
 
 jobs:
   publish-tauri:
     permissions:
       contents: write
-    runs-on: windows-latest
+    strategy:
+      fail-fast: false # Если упадет одна ОС, остальные продолжат сборку
+      matrix:
+        include:
+          # --- macOS (Intel + Apple Silicon) ---
+          - platform: 'macos-latest'
+            args: '--target x86_64-apple-darwin --bundles dmg,app'
+          - platform: 'macos-latest'
+            args: '--target aarch64-apple-darwin --bundles dmg,app'
+          
+          # --- Linux (AppImage + Deb) ---
+          - platform: 'ubuntu-22.04'
+            args: '--bundles appimage,deb'
+          
+          # --- Windows (NSIS) ---
+          - platform: 'windows-latest'
+            args: '--target x86_64-pc-windows-msvc --bundles nsis'
+
+    runs-on: ${{ matrix.platform }}
     steps:
       - uses: actions/checkout@v4
 
-      - name: setup node
+      - name: Setup Node
         uses: actions/setup-node@v4
         with:
           node-version: lts/*
 
-      - name: install Rust stable
+      - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: x86_64-pc-windows-msvc
+          # Для macOS нужны оба таргета, для Windows - только один
+          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || matrix.platform == 'windows-latest' && 'x86_64-pc-windows-msvc' || '' }}
 
-      - name: install frontend dependencies
+      - name: Install Linux dependencies
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+
+      - name: Install frontend dependencies
         run: npm install
 
-      - name: Build Tauri App
+      - name: Build and Release
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           tagName: ${{ github.ref_name }}
           releaseName: 'Sporelink Launcher ${{ github.ref_name }}'
-          releaseBody: 'Скачайте установщик для Windows.'
+          releaseBody: |
+            Скачайте установщик для вашей операционной системы:
+            - **Windows:** `.exe` (NSIS)
+            - **macOS:** `.dmg` (Intel и Apple Silicon)
+            - **Linux:** `.AppImage` или `.deb`
           releaseDraft: true
           prerelease: false
-          args: '--target x86_64-pc-windows-msvc --bundles nsis'
+          args: ${{ matrix.args }}
